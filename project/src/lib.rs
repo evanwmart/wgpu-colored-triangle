@@ -1,54 +1,58 @@
-use std::iter;
+// Standard library imports
+use std::iter; // Provides utility methods for iterator operations
 
+// Imports from the winit crate for windowing and event handling
 use winit::{
-    event::*,
-    event_loop::EventLoop,
-    keyboard::{ KeyCode, PhysicalKey },
-    window::{ Window, WindowBuilder },
+    event::*, // Handles various types of events such as keyboard and mouse input
+    event_loop::EventLoop, // Main event loop to handle window events
+    keyboard::{ KeyCode, PhysicalKey }, // For handling keyboard events by key code
+    window::{ Window, WindowBuilder }, // Used to create and manage windows
 };
 
+// Import for WebAssembly (wasm32) target, if applicable
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
+// The main state struct which holds all resources needed for rendering
 struct State<'a> {
-    surface: wgpu::Surface<'a>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
-    size: winit::dpi::PhysicalSize<u32>,
-    // The window must be declared after the surface so
-    // it gets dropped after it as the surface contains
-    // unsafe references to the window's resources.
-    window: &'a Window,
-    render_pipeline: wgpu::RenderPipeline,
+    surface: wgpu::Surface<'a>, // Surface that represents the part of the window where rendering occurs
+    device: wgpu::Device,       // Represents the GPU and handles resource management
+    queue: wgpu::Queue,         // Handles the submission of commands to the GPU
+    config: wgpu::SurfaceConfiguration, // Configuration for the surface, including display format and resolution
+    size: winit::dpi::PhysicalSize<u32>, // Window size in physical pixels
+    window: &'a Window,         // Reference to the window instance for rendering
+    render_pipeline: wgpu::RenderPipeline, // The pipeline object that contains rendering configurations
 }
 
+// Implementation of the State struct
 impl<'a> State<'a> {
+    // Asynchronous method to initialize a new State instance
     async fn new(window: &'a Window) -> State<'a> {
-        let size = window.inner_size();
+        let size = window.inner_size(); // Get the initial window size
 
-        // The instance is a handle to our GPU
+        // Create an instance for interfacing with the GPU
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             #[cfg(not(target_arch = "wasm32"))]
-            backends: wgpu::Backends::PRIMARY,
+            backends: wgpu::Backends::PRIMARY, // Use primary backend on native platforms
             #[cfg(target_arch = "wasm32")]
-            backends: wgpu::Backends::GL,
+            backends: wgpu::Backends::GL,      // Use OpenGL backend for WebAssembly
             ..Default::default()
         });
 
+        // Create a surface for rendering in the window
         let surface = instance.create_surface(window).unwrap();
 
-        // Attempt to request an adapter with the preferred settings
+        // Request a GPU adapter that meets the preferred criteria
         let adapter = instance
             .request_adapter(
                 &(wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: Some(&surface),
-                    force_fallback_adapter: true,
+                    power_preference: wgpu::PowerPreference::HighPerformance, // Prefer high-performance GPU
+                    compatible_surface: Some(&surface), // Ensure adapter is compatible with the surface
+                    force_fallback_adapter: true,       // Allow fallback if no compatible adapter found
                 })
             ).await
             .or_else(|| {
-                // If the preferred adapter is not found, fallback to enumerate_adapters
+                // Fallback to manually enumerating adapters if preferred adapter is not available
                 instance
                     .enumerate_adapters(wgpu::Backends::all())
                     .into_iter()
@@ -56,15 +60,16 @@ impl<'a> State<'a> {
             })
             .expect("Failed to find a compatible GPU adapter");
 
+        // Request a logical device and a command queue from the adapter
         let (device, queue) = adapter
             .request_device(
                 &(wgpu::DeviceDescriptor {
                     label: None,
                     required_features: wgpu::Features::empty(),
                     required_limits: if cfg!(target_arch = "wasm32") {
-                        wgpu::Limits::downlevel_webgl2_defaults()
+                        wgpu::Limits::downlevel_webgl2_defaults() // WebGL 2 defaults for wasm
                     } else {
-                        wgpu::Limits::default()
+                        wgpu::Limits::default() // Default limits for native
                     },
                     memory_hints: Default::default(),
                 }),
@@ -72,15 +77,17 @@ impl<'a> State<'a> {
             ).await
             .unwrap();
 
+        // Get the supported formats and modes for the surface
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps.formats
             .iter()
             .copied()
-            .find(|f| f.is_srgb())
+            .find(|f| f.is_srgb()) // Prefer sRGB format for better color accuracy
             .unwrap_or(surface_caps.formats[0]);
 
+        // Configure the surface with specified usage and format
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT, // Usage for render output
             format: surface_format,
             width: size.width,
             height: size.height,
@@ -90,17 +97,20 @@ impl<'a> State<'a> {
             view_formats: vec![],
         };
 
+        // Load the WGSL shader code from an external file
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
+        // Set up the render pipeline layout with an empty layout as no resources are bound
         let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
             bind_group_layouts: &[],
             push_constant_ranges: &[],
         });
 
+        // Create the render pipeline, specifying shaders, topology, and blend options
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&render_pipeline_layout),
@@ -115,21 +125,21 @@ impl<'a> State<'a> {
                 entry_point: "fs_main", // Fragment shader entry point
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    blend: Some(wgpu::BlendState::REPLACE), // Overwrites previous color values
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList, // Render triangles
+                topology: wgpu::PrimitiveTopology::TriangleList, // Render as triangles
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw, // Counter-clockwise winding
+                front_face: wgpu::FrontFace::Ccw, // Counter-clockwise winding for front faces
                 cull_mode: Some(wgpu::Face::Back),
                 polygon_mode: wgpu::PolygonMode::Fill,
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: None, // No depth/stencil buffer
+            depth_stencil: None, // No depth or stencil buffer used in this example
             multisample: wgpu::MultisampleState {
                 count: 1,
                 mask: !0,
@@ -139,6 +149,7 @@ impl<'a> State<'a> {
             cache: None, // Add this to disable caching
         });
     
+        // Configure the surface with device and configuration
         surface.configure(&device, &config);
 
         Self {
@@ -152,10 +163,12 @@ impl<'a> State<'a> {
         }
     }
 
+    // Accessor for the window reference
     fn window(&self) -> &Window {
         &self.window
     }
 
+    // Resize handler to update surface configuration if the window size changes
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.size = new_size;
@@ -165,15 +178,19 @@ impl<'a> State<'a> {
         }
     }
 
+    // Handles input events, returning false as no input handling is done in this example
     #[allow(unused_variables)]
     fn input(&mut self, event: &WindowEvent) -> bool {
         false
     }
 
+    // Update function (empty in this example as no animations or transformations are applied)
     fn update(&mut self) {}
+
+    // Render function that performs the drawing operations
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        let output = self.surface.get_current_texture()?;
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let output = self.surface.get_current_texture()?; // Get the next texture for rendering
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default()); // Create a view for the texture
     
         let mut encoder = self.device.create_command_encoder(
             &wgpu::CommandEncoderDescriptor {
@@ -192,7 +209,7 @@ impl<'a> State<'a> {
                         r: 0.1,
                         g: 0.2,
                         b: 0.3,
-                        a: 1.0,
+                        a: 1.0, // Background color for clearing the screen
                     }),
                     store: wgpu::StoreOp::Store,
                 },
@@ -202,15 +219,13 @@ impl<'a> State<'a> {
             timestamp_writes: None,
         });
     
-        render_pass.set_pipeline(&self.render_pipeline); 
-        render_pass.draw(0..3, 0..1); 
+        render_pass.set_pipeline(&self.render_pipeline); // Set the render pipeline
+        render_pass.draw(0..3, 0..1); // Draw a single triangle (3 vertices, 1 instance)
     
-        // End the render pass
-        drop(render_pass);  // This ensures the render pass is closed
+        drop(render_pass); // End the render pass
     
-        // Submit the command encoder
-        self.queue.submit(iter::once(encoder.finish()));
-        output.present();
+        self.queue.submit(iter::once(encoder.finish())); // Submit the command buffer for execution
+        output.present(); // Present the rendered image to the window
     
         Ok(())
     }    
@@ -220,23 +235,22 @@ impl<'a> State<'a> {
 pub async fn run() {
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "wasm32")] {
-            std::panic::set_hook(Box::new(console_error_panic_hook::hook));
-            console_log::init_with_level(log::Level::Info).expect("Couldn't initialize logger");
+            std::panic::set_hook(Box::new(console_error_panic_hook::hook)); // Set a panic hook for better error messages in wasm
+            console_log::init_with_level(log::Level::Info).expect("Couldn't initialize logger"); // Initialize logging for wasm
         } else {
-            env_logger::init();
+            env_logger::init(); // Initialize logging for native platforms
         }
     }
 
-    let event_loop = EventLoop::new().unwrap();
-    let window = WindowBuilder::new().build(&event_loop).unwrap();
+    let event_loop = EventLoop::new().unwrap(); // Create the event loop to handle window events
+    let window = WindowBuilder::new().build(&event_loop).unwrap(); // Build the main application window
 
     #[cfg(target_arch = "wasm32")]
     {
-        // Winit prevents sizing with CSS, so we have to set
-        // the size manually when on web.
         use winit::dpi::PhysicalSize;
-
         use winit::platform::web::WindowExtWebSys;
+        
+        // Append the window canvas to the web document when running as WebAssembly
         web_sys
             ::window()
             .and_then(|win| win.document())
@@ -248,21 +262,19 @@ pub async fn run() {
             })
             .expect("Couldn't append canvas to document body.");
 
-        let _ = window.request_inner_size(PhysicalSize::new(450, 400));
+        let _ = window.request_inner_size(PhysicalSize::new(450, 400)); // Set initial size for WebAssembly window
     }
 
-    // State::new uses async code, so we're going to wait for it to finish
-    let mut state = State::new(&window).await;
-    let mut surface_configured = false;
+    let mut state = State::new(&window).await; // Initialize the rendering state
 
     event_loop
         .run(move |event, control_flow| {
             match event {
                 Event::WindowEvent { ref event, window_id } if window_id == state.window().id() => {
                     if !state.input(event) {
-                        // UPDATED!
+                        // Handle window events such as closing and resizing
                         match event {
-                            | WindowEvent::CloseRequested
+                            WindowEvent::CloseRequested
                             | WindowEvent::KeyboardInput {
                                   event: KeyEvent {
                                       state: ElementState::Pressed,
@@ -270,36 +282,17 @@ pub async fn run() {
                                       ..
                                   },
                                   ..
-                              } => control_flow.exit(),
+                              } => control_flow.exit(), // Exit on escape key or close request
                             WindowEvent::Resized(physical_size) => {
-                                log::info!("physical_size: {physical_size:?}");
-                                surface_configured = true;
-                                state.resize(*physical_size);
+                                state.resize(*physical_size); // Handle window resize
                             }
                             WindowEvent::RedrawRequested => {
-                                // This tells winit that we want another frame after this one
-                                state.window().request_redraw();
-
-                                if !surface_configured {
-                                    return;
-                                }
-
-                                state.update();
+                                state.update(); // Update application state
                                 match state.render() {
                                     Ok(_) => {}
-                                    // Reconfigure the surface if it's lost or outdated
-                                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) =>
-                                        state.resize(state.size),
-                                    // The system is out of memory, we should probably quit
-                                    Err(wgpu::SurfaceError::OutOfMemory) => {
-                                        log::error!("OutOfMemory");
-                                        control_flow.exit();
-                                    }
-
-                                    // This happens when the a frame takes too long to present
-                                    Err(wgpu::SurfaceError::Timeout) => {
-                                        log::warn!("Surface timeout")
-                                    }
+                                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => state.resize(state.size),
+                                    Err(wgpu::SurfaceError::OutOfMemory) => control_flow.exit(), // Exit on out of memory error
+                                    Err(wgpu::SurfaceError::Timeout) => log::warn!("Surface timeout"), // Log timeout warnings
                                 }
                             }
                             _ => {}
